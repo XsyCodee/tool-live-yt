@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { handleLogin, handleRegister } from "@/lib/auth/handleGoogle";
+import { handleLogin, handleRegister } from "@/lib/auth/handleLogin";
+import { supabase } from "@/lib/supabaseclient";
 
 export default function LoginForm() {
   const router = useRouter();
@@ -31,14 +32,32 @@ export default function LoginForm() {
         ? await handleLogin(email, password)
         : await handleRegister(email, password);
 
-      if (error) throw new Error(error.message);
+      if (error) {
+        if (error.message === "Invalid login credentials") {
+          setError("Email atau password salah, atau akun belum terdaftar.");
+        } else {
+          setError(error.message);
+        }
+        setLoading(false);
+        return;
+      }
 
-      router.push("/dashboard");
+      router.push("/handle-manual-login");
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const loginWithGoogle = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${location.origin}/handle-google-login`,
+      },
+    });
+    if (error) setError(error.message);
   };
 
   return (
@@ -77,6 +96,16 @@ export default function LoginForm() {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? "Memproses..." : isLogin ? "Login" : "Daftar"}
             </Button>
+            {isLogin && (
+              <Button
+                variant="outline"
+                className="w-full"
+                type="button"
+                onClick={loginWithGoogle}
+              >
+                Login dengan Google
+              </Button>
+            )}
           </form>
 
           <div className="text-center text-sm text-gray-500">
