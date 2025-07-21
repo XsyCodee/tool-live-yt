@@ -1,104 +1,88 @@
-// src/app/api/youtube/start-stream/route.js
-import { NextResponse } from 'next/server';
-import { spawn } from 'child_process';
+import { google } from 'googleapis';
+import { getSession } from '@/lib/session';
+import { getUserOAuthClient } from '@/lib/oauth';
 
-// Variabel R2_PUBLIC_DOMAIN dari .env.local tidak lagi diperlukan di sini
-// jika kita menggunakan videoPublicUrl yang dikirim dari frontend.
-// const R2_PUBLIC_DOMAIN = process.env.R2_PUBLIC_DOMAIN; // Hapus atau komentari baris ini
-
-export async function POST(request) {
+export async function POST(req) {
   try {
-    // === PERBAIKAN UTAMA DI SINI ===
-    // Pastikan videoPublicUrl di-destructure dari request.json()
-    const { userId, videoStoragePath, rtmpUrl, streamKey, streamResolution, videoPublicUrl } = await request.json(); //
+    const body = await req.json();
+    const { userId, broadcastId, streamId } = body;
 
-    // Validasi dasar, tambahkan videoPublicUrl
-    if (!videoStoragePath || !rtmpUrl || !streamKey || !streamResolution || !videoPublicUrl) { //
-      return NextResponse.json({ success: false, message: 'Missing FFmpeg stream details (videoStoragePath, rtmpUrl, streamKey, streamResolution, or videoPublicUrl).' }, { status: 400 }); //
+    if (!userId || !broadcastId || !streamId) {
+      return Response.json({ success: false, message: 'Missing required fields.' }, { status: 400 });
     }
 
-    // === PERBAIKAN UTAMA DI SINI ===
-    // Gunakan videoPublicUrl yang sudah lengkap dan dikirim dari frontend.
-    // Ini adalah URL yang sudah terbukti bisa di-curl dari VPS.
-    const sourceVideoUrlForFfmpeg = videoPublicUrl; //
-
-    // Hapus atau komentari konstruksi ulang yang lama jika ada di sini:
-    // const videoPublicUrl = `${R2_PUBLIC_DOMAIN}/${videoStoragePath}`;
-
-    console.log(`DEBUG (start-stream): videoPublicUrl received from frontend: ${videoPublicUrl}`); //
-    console.log(`DEBUG (start-stream): Using this URL as FFmpeg input: ${sourceVideoUrlForFfmpeg}`); //
-
-    // FFmpeg command (gunakan versi yang lebih lengkap dari diskusi sebelumnya)
-    let scaleFilter = '';
-    let videoBitrate = '4500k';
-
-    if (streamResolution === '1080p') {
-      scaleFilter = 'scale=1920:1080';
-      videoBitrate = '8000k';
-    } else if (streamResolution === '720p') {
-      scaleFilter = 'scale=1280:720';
-      videoBitrate = '4500k';
-    } else if (streamResolution === '480p') {
-      scaleFilter = 'scale=854:480';
-      videoBitrate = '1500k';
+    const session = await getSession(userId);
+    if (!session || !session.tokens) {
+      return Response.json({ success: false, message: 'User session not found.' }, { status: 401 });
     }
 
-    const ffmpegArgs = [
-      '-re',
-      '-i', sourceVideoUrlForFfmpeg, // Menggunakan URL yang benar
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-b:v', videoBitrate,
-      '-maxrate', `${parseInt(videoBitrate) + 500}k`,
-      '-bufsize', `${parseInt(videoBitrate) * 2}k`,
-      '-pix_fmt', 'yuv420p',
-      '-g', '50',
-      '-keyint_min', '50',
-      '-sc_threshold', '0',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-ar', '44100',
-      '-f', 'flv',
-      ...(scaleFilter ? ['-vf', scaleFilter] : []),
-      `${rtmpUrl}/${streamKey}`
-    ];
+    const oauth2Client = await getUserOAuthClient(session.tokens);
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
 
-    console.log(`Starting FFmpeg for user ${userId} to stream ${sourceVideoUrlForFfmpeg} to ${rtmpUrl}/${streamKey}`); //
-    console.log('FFmpeg Command Args:', ffmpegArgs.join(' ')); //
+    // Tunggu sampai stream menjadi aktif
+    let attempts = 0;
+    const maxAttempts = 10;
+    const waitTime = 3000;
+    let streamStatus = '';
 
-    const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, { detached: true });
+    while (attempts < maxAttempts) {
+      const streamStatusRes = await youtube.liveStreams.list({
+        part: ['status'],
+        id: [streamId],
+      });
 
-    ffmpegProcess.stdout.on('data', (data) => {
-      console.log(`FFmpeg stdout: ${data}`);
+      streamStatus = streamStatusRes?.data?.items?.[0]?.status?.streamStatus;
+      console.log(`Check stream status [${attempts + 1}]:`, streamStatus);
+
+      if (streamStatus === 'active') break;
+
+      await new Promise((res) => setTimeout(res, waitTime));
+      attempts++;
+    }
+
+    if (streamStatus !== 'active') {
+      return Response.json(
+        { success: false, message: 'Stream did not become active in time.' },
+        { status: 403 }
+      );
+    }
+
+    // Cek lifecycle status broadcast saat ini
+    const broadcastRes = await youtube.liveBroadcasts.list({
+      part: ['status'],
+      id: [broadcastId],
     });
 
-    ffmpegProcess.stderr.on('data', (data) => {
-      console.error(`FFmpeg stderr: ${data}`);
+    const currentStatus = broadcastRes?.data?.items?.[0]?.status?.lifeCycleStatus;
+    console.log('📺 Broadcast current status:', currentStatus);
+
+    // Transisi ke testing jika masih ready
+    if (currentStatus === 'ready') {
+      console.log('🔁 Transitioning from READY → TESTING...');
+      await youtube.liveBroadcasts.transition({
+        broadcastStatus: 'testing',
+        id: broadcastId,
+        part: ['status'],
+      });
+
+      // Delay agar transisi berhasil
+      await new Promise((res) => setTimeout(res, 5000));
+    }
+
+    // Transisi ke live
+    console.log('🚀 Transitioning from TESTING → LIVE...');
+    await youtube.liveBroadcasts.transition({
+      broadcastStatus: 'live',
+      id: broadcastId,
+      part: ['status'],
     });
 
-    ffmpegProcess.on('close', (code) => {
-      console.log(`FFmpeg process exited with code ${code}`);
-      if (code !== 0) {
-        console.error(`FFmpeg streaming failed for user ${userId}. Exit code: ${code}`);
-      } else {
-        console.log(`FFmpeg streaming completed for user ${userId}.`);
-      }
-    });
+    console.log('✅ Broadcast transitioned to LIVE.');
+    return Response.json({ success: true, message: 'Broadcast transitioned to LIVE.' });
 
-    ffmpegProcess.on('error', (err) => {
-      console.error(`Failed to start FFmpeg process: ${err.message}`);
-      if (err.code === 'ENOENT') {
-        console.error('FFmpeg is not installed or not in your system\'s PATH.');
-        console.error('Please install FFmpeg on your server where this Node.js application is running.');
-      }
-    });
-
-    ffmpegProcess.unref();
-
-    return NextResponse.json({ success: true, message: 'FFmpeg stream initiated successfully.' });
-
-  } catch (error) {
-    console.error("Error in /api/youtube/start-stream:", error.message);
-    return NextResponse.json({ success: false, message: `Failed to initiate stream: ${error.message}` }, { status: 500 });
+  } catch (err) {
+    console.error('start-stream error:', err);
+    return Response.json({ success: false, message: err?.message || 'Unexpected error.' }, { status: 500 });
   }
 }
+

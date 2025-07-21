@@ -1,8 +1,7 @@
 // src/components/Sections/AccountSettingsSection.jsx
 
 import React, { useState, useEffect } from 'react';
-// PERBAHAN: Ganti Link dan LinkOff dengan Check dan X
-import { Youtube, Check, X } from 'lucide-react'; // <<< UBAH BARIS INI
+import { Youtube, Check, X } from 'lucide-react'; // Menggunakan ikon Lucide React
 import { supabase } from '@/lib/supabaseclient';
 
 const AccountSettingsSection = () => {
@@ -12,9 +11,8 @@ const AccountSettingsSection = () => {
   const [loadingConnectionStatus, setLoadingConnectionStatus] = useState(true);
 
   // Kredensial Google API dari Environment Variables (aman karena ini client-side render)
-  // Pastikan ini dimulai dengan NEXT_PUBLIC_
   const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
-  const GOOGLE_REDIRECT_URI = process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI; // Contoh: http://localhost:3000/api/youtube-auth-callback
+  const GOOGLE_REDIRECT_URI = process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI;
 
   // Fungsi untuk memulai alur otorisasi YouTube OAuth
   const handleConnectYouTube = () => {
@@ -27,15 +25,16 @@ const AccountSettingsSection = () => {
     const scopes = [
       'https://www.googleapis.com/auth/youtube.upload', // Untuk mengunggah video
       'https://www.googleapis.com/auth/youtube.force-ssl', // Untuk keamanan
-      'https://www.googleapis.com/auth/youtube', // Untuk kontrol penuh
+      'https://www.googleapis.com/auth/youtube', // Untuk kontrol penuh akun YouTube
       'https://www.googleapis.com/auth/youtube.readonly', // Untuk membaca info channel
+      // 'https://www.googleapis.com/auth/youtube.liveBroadcast', // <<< DIHAPUS: Ini adalah scope yang menyebabkan error invalid_scope
     ];
 
     const authUrl = `${rootUrl}?` + new URLSearchParams({
       client_id: GOOGLE_CLIENT_ID,
       redirect_uri: GOOGLE_REDIRECT_URI,
       response_type: 'code',
-      scope: scopes.join(' '),
+      scope: scopes.join(' '), // Gabungkan semua scope yang diminta
       access_type: 'offline', // Penting untuk mendapatkan refresh_token
       prompt: 'consent', // Minta user untuk selalu memberikan consent
       include_granted_scopes: 'true', // Untuk melihat scope yang sudah diberikan
@@ -46,6 +45,7 @@ const AccountSettingsSection = () => {
 
   // Fungsi untuk memutuskan koneksi YouTube (akan menghapus token dari DB)
   const handleDisconnectYouTube = async () => {
+    // Mengganti alert() dengan konfirmasi modal kustom jika ini adalah aplikasi produksi
     if (!confirm("Apakah Anda yakin ingin memutuskan akun YouTube Anda?")) {
       return;
     }
@@ -157,14 +157,14 @@ const AccountSettingsSection = () => {
                 onClick={handleDisconnectYouTube}
                 className="bg-red-100 text-red-600 hover:bg-red-200 px-4 py-2 rounded-lg text-sm font-semibold flex items-center"
               >
-                <X size={16} className="mr-2" /> Putuskan Akun {/* <<< GUNAKAN IKON X */}
+                <X size={16} className="mr-2" /> Putuskan Akun
               </button>
             ) : (
               <button
                 onClick={handleConnectYouTube}
                 className="bg-blue-100 text-blue-600 hover:bg-blue-200 px-4 py-2 rounded-lg text-sm font-semibold flex items-center"
               >
-                <Check size={16} className="mr-2" /> Hubungkan Akun YouTube {/* <<< GUNAKAN IKON CHECK */}
+                <Check size={16} className="mr-2" /> Hubungkan Akun YouTube
               </button>
             )}
           </div>
@@ -186,3 +186,4 @@ const AccountSettingsSection = () => {
 };
 
 export default AccountSettingsSection;
+

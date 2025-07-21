@@ -40,8 +40,17 @@ export default function DashboardClient() {
   const [notifications, setNotifications] = useState([]);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
 
-  // State untuk melacak apakah upload baru saja selesai dan siap untuk langkah berikutnya
   const [uploadCompletedAndReady, setUploadCompletedAndReady] = useState(false);
+
+  // --- STATE BARU UNTUK PENGATURAN STREAM ---
+  const [streamCategory, setStreamCategory] = useState(''); // Default kosong
+  const [isMadeForKids, setIsMadeForKids] = useState(false); // Default tidak untuk anak-anak
+  const [enableLiveChat, setEnableLiveChat] = useState(true); // Default aktif
+  const [enableLiveChatRecording, setEnableLiveChatRecording] = useState(true); // Default aktif
+  const [enableLiveChatHighlights, setEnableLiveChatHighlights] = useState(true); // Default aktif
+  const [liveChatParticipantMode, setLiveChatParticipantMode] = useState('any'); // Default siapa saja
+  const [enableReactions, setEnableReactions] = useState(true); // Default aktif
+  // --- AKHIR STATE BARU ---
 
   const unreadNotificationsCount = notifications.filter(n => n.unread).length;
 
@@ -60,7 +69,7 @@ export default function DashboardClient() {
 
     if (eOrFiles && eOrFiles.dataTransfer && eOrFiles.dataTransfer.files) {
       eOrFiles.preventDefault();
-      files = Array.from(eOrFiles.dataTransfer.files);
+      files = Array.from(e.dataTransfer.files);
       console.log('DEBUG: handleFileDrop triggered by DRAG-AND-DROP.');
     } else if (Array.isArray(eOrFiles)) {
       files = eOrFiles;
@@ -84,7 +93,7 @@ export default function DashboardClient() {
     }
 
     setIsUploadingFile(true);
-    setUploadCompletedAndReady(false); // Reset status siap
+    setUploadCompletedAndReady(false);
     const newUploadedFiles = [];
     try {
       for (const file of files) {
@@ -146,15 +155,13 @@ export default function DashboardClient() {
     console.log('  selectedFiles.length:', selectedFiles.length);
     console.log('  selectedFiles[0]:', selectedFiles[0]);
     console.log('  selectedFiles[0]?.storage_path:', selectedFiles[0]?.storage_path);
+    console.log('  selectedFiles[0]?.publicUrl:', selectedFiles[0]?.publicUrl);
 
-    if (isUploadingFile || !selectedFiles[0] || !selectedFiles[0].storage_path) {
+
+    if (isUploadingFile || !selectedFiles[0] || !selectedFiles[0].storage_path || !selectedFiles[0].publicUrl) {
         alert('Detail video yang diunggah tidak ditemukan atau proses upload masih berjalan. Mohon tunggu atau unggah ulang.');
-        console.error('Error: selectedFiles[0] or its storage_path is missing, or upload is still in progress.', { firstFile: selectedFiles[0], isUploadingFile });
+        console.error('Error: selectedFiles[0] or its storage_path/publicUrl is missing, or upload is still in progress.', { firstFile: selectedFiles[0], isUploadingFile });
         return;
-    }
-
-    if (!confirm("Apakah Anda yakin ingin memulai stream dengan biaya yang dihitung?")) {
-      return;
     }
 
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -164,9 +171,13 @@ export default function DashboardClient() {
       return;
     }
 
+    if (!confirm("Apakah Anda yakin ingin memulai stream dengan biaya yang dihitung?")) {
+      return;
+    }
+
     const firstFile = selectedFiles[0];
     const videoStoragePath = firstFile.storage_path;
-    const videoPublicUrl = firstFile.publicUrl; // Ini adalah URL publik R2
+    const videoPublicUrl = firstFile.publicUrl;
 
     try {
       console.log("Memanggil API /api/youtube/create-live-broadcast...");
@@ -180,6 +191,15 @@ export default function DashboardClient() {
           streamVisibility: streamVisibility,
           scheduledDateTime: startNow ? new Date().toISOString() : scheduledDateTime,
           streamResolution: streamResolution,
+          // --- PROPS BARU UNTUK BACKEND ---
+          streamCategory: streamCategory,
+          isMadeForKids: isMadeForKids,
+          enableLiveChat: enableLiveChat,
+          enableLiveChatRecording: enableLiveChatRecording,
+          enableLiveChatHighlights: enableLiveChatHighlights,
+          liveChatParticipantMode: liveChatParticipantMode,
+          enableReactions: enableReactions,
+          // --- AKHIR PROPS BARU ---
         }),
       });
       const broadcastData = await createBroadcastResponse.json();
@@ -191,36 +211,55 @@ export default function DashboardClient() {
       const { broadcastId, streamId, rtmpUrl, streamKey, youtubeWatchUrl } = broadcastData;
       console.log("YouTube Broadcast & Stream created successfully:", broadcastData);
 
-      // --- NEW STEP: Call FFmpeg start stream API ---
-      console.log("Memanggil API /api/youtube/start-stream untuk memulai FFmpeg...");
-      const startStreamResponse = await fetch('/api/youtube/start-stream', {
+      // --- NEW STEP: Call FFmpeg start stream API (start-ffmpeg-stream) ---
+      console.log("Memanggil API /api/youtube/start-ffmpeg-stream untuk memulai FFmpeg...");
+      const startFfmpegResponse = await fetch('/api/youtube/start-ffmpeg-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
-          videoStoragePath: videoStoragePath, // Path di R2
-          rtmpUrl: rtmpUrl,
-          streamKey: streamKey,
+          videoStoragePath: videoStoragePath,
+          rtmpUrl: rtmpUrl, // rtmpUrl yang sudah digabungkan dan dibersihkan dari create-live-broadcast
+          streamKey: streamKey, // Stream key asli (untuk debugging di start-ffmpeg-stream jika perlu)
           streamResolution: streamResolution,
-          // Anda mungkin perlu mengirim videoPublicUrl jika server FFmpeg tidak dapat mengakses R2 secara langsung melalui storage_path
-          // atau jika R2 tidak diatur untuk public access dengan path tersebut.
-          // Untuk saat ini, asumsikan FFmpeg di server bisa mengakses R2 via publicUrl jika diberikan.
-          // Atau pastikan publicUrl memang URL yang dapat diakses dari server tempat FFmpeg berjalan.
-          videoPublicUrl: videoPublicUrl // Tambahkan ini jika FFmpeg perlu URL lengkap
+          videoPublicUrl: videoPublicUrl,
+          broadcastId: broadcastId,
         }),
       });
-      const startStreamData = await startStreamResponse.json();
+      const ffmpegStatus = await startFfmpegResponse.json();
 
-      if (!startStreamResponse.ok || !startStreamData.success) {
-        throw new Error(startStreamData.message || 'Failed to start FFmpeg stream.');
+      if (!startFfmpegResponse.ok || !ffmpegStatus.success) {
+        throw new Error(ffmpegStatus.message || 'Failed to start FFmpeg stream.');
       }
-      console.log("FFmpeg stream initiated successfully:", startStreamData.message);
-      // --- END NEW STEP ---
+      console.log("FFmpeg stream initiation status:", ffmpegStatus.message);
+
+      // --- NEW STEP: Call API untuk transisi broadcast ke live (start-stream) ---
+      console.log('Memanggil API /api/youtube/start-stream untuk transisi broadcast ke live...');
+      const transitionResponse = await fetch('/api/youtube/start-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          broadcastId: broadcastId,
+          streamId: streamId,
+        }),
+      });
+      const transitionResult = await transitionResponse.json();
+
+      if (!transitionResponse.ok || !transitionResult.success) {
+        console.error('Gagal transisi broadcast:', transitionResult);
+        alert(`Failed to transition broadcast to live: ${transitionResult.message || transitionResult.error || 'Unknown error'}`);
+      } else {
+        console.log('Broadcast is now live!', transitionResult);
+        alert('Live stream started successfully!');
+        // Anda bisa mengarahkan pengguna ke youtubeWatchUrl di sini jika diinginkan
+        // window.open(youtubeWatchUrl, '_blank');
+      }
 
       const newStream = {
         id: broadcastId,
         name: streamTitle,
-        status: 'Sedang Diproses', // Sekarang ini akan berubah menjadi 'Live' setelah FFmpeg terhubung
+        status: 'Sedang Diproses',
         resolution: streamResolution,
         startTime: new Date().toLocaleString(),
         duration: 'Live',
@@ -330,7 +369,7 @@ export default function DashboardClient() {
             scheduledDateTime={scheduledDateTime}
             setScheduledDateTime={setScheduledDateTime}
             loopPlaylist={loopPlaylist}
-            setLoopPlaylist={loopPlaylist}
+            setLoopPlaylist={setLoopPlaylist}
             previewComponent={
               selectedFiles.length > 0 && (
                 <div className="mt-4">
@@ -367,6 +406,22 @@ export default function DashboardClient() {
             handleStartStream={handleStartStreamFromModal}
             handleFileDrop={handleFileDrop}
             isUploadingFile={isUploadingFile}
+            // --- TERUSKAN PROPS BARU KE MODAL ---
+            streamCategory={streamCategory}
+            setStreamCategory={setStreamCategory}
+            isMadeForKids={isMadeForKids}
+            setIsMadeForKids={setIsMadeForKids}
+            enableLiveChat={enableLiveChat}
+            setEnableLiveChat={setEnableLiveChat}
+            enableLiveChatRecording={enableLiveChatRecording}
+            setEnableLiveChatRecording={setEnableLiveChatRecording}
+            enableLiveChatHighlights={enableLiveChatHighlights}
+            setEnableLiveChatHighlights={setEnableLiveChatHighlights}
+            liveChatParticipantMode={liveChatParticipantMode}
+            setLiveChatParticipantMode={setLiveChatParticipantMode}
+            enableReactions={enableReactions}
+            setEnableReactions={setEnableReactions}
+            // --- AKHIR TERUSKAN PROPS BARU ---
           />
         )}
       </div>
